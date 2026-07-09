@@ -3,8 +3,8 @@
   "name": "Qwen-Image-Edit (GGUF) Image Edit",
   "type": "model",
   "source": "https://github.com/iammojogo-sudo/qwen_image_edit_modly",
-  "description": "Instruction-based image editing with Alibaba's Qwen-Image-Edit, loaded as a 4-bit GGUF transformer so it fits consumer GPUs. Feed one image plus a text instruction (e.g. 'rotate the object 180 degrees to show the back', 'side profile view') and get edited image(s) out. Apache-2.0 and ungated — no HuggingFace login or license click. 20B model: runs on ~12GB via the streaming Low VRAM mode (slow), down to ~6-8GB with enough system RAM.",
-  "version": "1.0.0",
+  "description": "Instruction-based image editing with Alibaba's Qwen-Image-Edit, loaded as a 4-bit GGUF transformer. Optimized defaults: 20 steps, CFG 3.0, auto VRAM detection to pick max_speed (no offload) when possible. Apache-2.0 and ungated.",
+  "version": "1.1.0",
   "author": "iammojogo",
   "vram_gb": 8,
   "tags": [
@@ -59,15 +59,15 @@
           "id": "steps",
           "label": "Steps",
           "type": "int",
-          "default": 40,
-          "min": 10,
-          "max": 50
+          "default": 20,
+          "min": 5,
+          "max": 30
         },
         {
           "id": "true_cfg_scale",
           "label": "CFG Scale",
           "type": "float",
-          "default": 4.0,
+          "default": 3.0,
           "min": 1,
           "max": 10
         },

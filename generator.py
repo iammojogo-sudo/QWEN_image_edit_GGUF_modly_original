@@ -52,7 +52,7 @@ def _float(val, default):
 class QwenImageEditGenerator(BaseGenerator):
     MODEL_ID     = "qwen_image_edit_gguf"
     DISPLAY_NAME = "Qwen-Image-Edit (GGUF) Image Edit"
-    VRAM_GB      = 12
+    VRAM_GB      = 8
 
     def _gguf_filename(self):
         q = (getattr(self, "_quant", None) or DEFAULT_QUANT)
@@ -135,6 +135,7 @@ class QwenImageEditGenerator(BaseGenerator):
             else:  # balanced (default)
                 pipe.enable_model_cpu_offload()
             try:
+                pipe.enable_attention_slicing()
                 pipe.vae.enable_tiling()
                 pipe.vae.enable_slicing()
             except Exception:
@@ -154,9 +155,24 @@ class QwenImageEditGenerator(BaseGenerator):
 
     def _resolve_mode(self, mode):
         mode = (mode or "auto").strip().lower()
-        if mode in ("balanced", "max_speed"):
+        if mode == "max_speed":
             return mode
-        # auto, or any legacy value (e.g. the old "low_vram"), maps to model offload
+        if mode != "balanced":
+            # "auto": pick based on available VRAM
+            try:
+                import torch
+                free, total = torch.cuda.mem_get_info()
+                free_gb = free / (1024**3)
+                total_gb = total / (1024**3)
+                quant_gb = GGUF_QUANTS.get(self._quant or DEFAULT_QUANT, 0)
+                # Use max_speed if there is >= 3GB headroom after placing
+                # the transformer + text encoder (~5GB 4-bit) + VAE (~1GB)
+                needed = quant_gb + 6
+                if total_gb >= needed + 3:
+                    print("[Qwen] auto: %dGB VRAM detected — using max_speed" % total_gb)
+                    return "max_speed"
+            except Exception:
+                pass
         return "balanced"
 
     def _load_4bit_text_encoder(self, torch):
@@ -233,8 +249,8 @@ class QwenImageEditGenerator(BaseGenerator):
 
         image = self._to_pil(image_bytes)
 
-        steps     = _int(params.get("steps"), 40)
-        cfg       = _float(params.get("true_cfg_scale"), 4.0)
+        steps     = _int(params.get("steps"), 20)
+        cfg       = _float(params.get("true_cfg_scale"), 3.0)
         n_images  = max(1, min(_int(params.get("num_images"), 1), 4))
         base_seed = _int(params.get("seed"), 0)
 
