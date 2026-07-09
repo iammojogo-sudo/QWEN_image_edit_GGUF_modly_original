@@ -37,9 +37,9 @@
           "type": "select",
           "default": "auto",
           "options": [
-            { "value": "auto",      "label": "Auto (model CPU offload)" },
-            { "value": "balanced",  "label": "Offload (model CPU offload)" },
-            { "value": "max_speed", "label": "Max Speed (no offload, 24GB+)" }
+            { "value": "auto",      "label": "Auto (max_speed if VRAM fits)" },
+            { "value": "balanced",  "label": "Offload (CPU offload, slow)" },
+            { "value": "max_speed", "label": "Max Speed (no offload, auto quant)" }
           ]
         },
         {

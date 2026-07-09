@@ -20,12 +20,23 @@ def print(*args, **kwargs):
 # model CPU offload puts the whole transformer on the GPU during denoising.
 GGUF_REPO = "calcuis/qwen-image-edit-gguf"
 GGUF_QUANTS = {
-    "q2_k":   "qwen-image-edit-q2_k.gguf",    # ~7.1 GB  (8-12GB cards, lowest quality)
-    "q3_k_m": "qwen-image-edit-q3_k_m.gguf",  # ~9.1 GB  (12GB cards) [default]
-    "q4_k_m": "qwen-image-edit-q4_k_m.gguf",  # ~11.7 GB (16GB cards)
-    "q5_k_m": "qwen-image-edit-q5_k_m.gguf",  # ~14.2 GB (16-24GB cards)
-    "q8_0":   "qwen-image-edit-q8_0.gguf",    # ~21.8 GB (24GB+ cards)
+    "q2_k":   "qwen-image-edit-q2_k.gguf",
+    "q3_k_m": "qwen-image-edit-q3_k_m.gguf",
+    "q4_k_m": "qwen-image-edit-q4_k_m.gguf",
+    "q5_k_m": "qwen-image-edit-q5_k_m.gguf",
+    "q8_0":   "qwen-image-edit-q8_0.gguf",
 }
+# Estimated GPU memory usage per quant (GB). Slightly higher than file size due to
+# internal model overhead (buffers, intermediate activations).
+GGUF_QUANT_SIZES = {
+    "q2_k":   8.0,
+    "q3_k_m": 10.0,
+    "q4_k_m": 12.5,
+    "q5_k_m": 15.0,
+    "q8_0":   22.5,
+}
+# Estimated VRAM needed aside from the transformer (text encoder 4-bit + VAE + buffers)
+OVERHEAD_GB = 7.5
 DEFAULT_QUANT = "q3_k_m"
 
 # ... paired with the "decoder" bundle that holds the VAE, text encoder, tokenizer,
@@ -77,9 +88,6 @@ class QwenImageEditGenerator(BaseGenerator):
         if self._model is not None:
             self.unload()
 
-        if not self.is_downloaded():
-            self._download_weights()
-
         import torch
         from diffusers import (
             QwenImageEditPipeline,
@@ -91,8 +99,37 @@ class QwenImageEditGenerator(BaseGenerator):
         self._dtype = torch.bfloat16 if self._device == "cuda" else torch.float32
 
         resolved = self._resolve_mode(mode)
+
+        # max_speed: auto-pick best quant that fits VRAM, never offload
+        if resolved == "max_speed":
+            try:
+                total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                fits = {n: s for n, s in GGUF_QUANT_SIZES.items() if s + OVERHEAD_GB <= total_gb}
+                if not fits:
+                    raise RuntimeError(
+                        "max_speed requires at least %.0fGB VRAM (Q2_K %.0fGB + overhead %.0fGB) "
+                        "but your GPU has %.0fGB. Use 'balanced' mode (CPU offload) instead."
+                        % (GGUF_QUANT_SIZES["q2_k"] + OVERHEAD_GB, GGUF_QUANT_SIZES["q2_k"],
+                           OVERHEAD_GB, total_gb)
+                    )
+                rank = ["q8_0", "q5_k_m", "q4_k_m", "q3_k_m", "q2_k"]
+                best = next(q for q in rank if q in fits)
+                if best != quant:
+                    old = quant
+                    quant = best
+                    self._quant = best
+                    print("[Qwen] max_speed: auto-changed quant %s -> %s (%dGB VRAM)" % (old, best, total_gb))
+            except RuntimeError:
+                raise
+            except Exception as e:
+                print("[Qwen] VRAM check failed (%s); using selected quant" % e)
+
+        # Download happens AFTER quant adjustment so the right GGUF file is fetched
+        if not self.is_downloaded():
+            self._download_weights()
+
         gguf_file = self._gguf_filename()
-        print("[Qwen] loading (%s) GGUF=%s" % (resolved, gguf_file))
+        print("[Qwen] loading (%s) GGUF=%s quant=%s" % (resolved, gguf_file, quant))
 
         try:
             transformer = QwenImageTransformer2DModel.from_single_file(
@@ -158,18 +195,14 @@ class QwenImageEditGenerator(BaseGenerator):
         if mode == "max_speed":
             return mode
         if mode != "balanced":
-            # "auto": pick based on available VRAM
+            # "auto": use max_speed if selected quant fits in VRAM
             try:
                 import torch
-                free, total = torch.cuda.mem_get_info()
-                free_gb = free / (1024**3)
-                total_gb = total / (1024**3)
-                quant_gb = GGUF_QUANTS.get(self._quant or DEFAULT_QUANT, 0)
-                # Use max_speed if there is >= 3GB headroom after placing
-                # the transformer + text encoder (~5GB 4-bit) + VAE (~1GB)
-                needed = quant_gb + 6
-                if total_gb >= needed + 3:
-                    print("[Qwen] auto: %dGB VRAM detected — using max_speed" % total_gb)
+                total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                q = getattr(self, "_quant", None) or DEFAULT_QUANT
+                qsize = GGUF_QUANT_SIZES.get(q, GGUF_QUANT_SIZES[DEFAULT_QUANT])
+                if qsize + OVERHEAD_GB <= total_gb:
+                    print("[Qwen] auto: %dGB VRAM — max_speed" % total_gb)
                     return "max_speed"
             except Exception:
                 pass
